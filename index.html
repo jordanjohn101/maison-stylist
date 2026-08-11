@@ -1,0 +1,1193 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8"/>
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover"/>
+<meta name="apple-mobile-web-app-capable" content="yes"/>
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent"/>
+<meta name="apple-mobile-web-app-title" content="Maison"/>
+<meta name="theme-color" content="#1c1915"/>
+<title>Maison · AI Stylist</title>
+<link rel="manifest" href="manifest.json"/>
+<link rel="apple-touch-icon" href="icon.png"/>
+<link rel="preconnect" href="https://fonts.googleapis.com"/>
+<link href="https://fonts.googleapis.com/css2?family=Cormorant+Garamond:ital,wght@0,300;0,400;0,500;1,300;1,400;1,500&family=Jost:wght@300;400;500;600&display=swap" rel="stylesheet"/>
+<style>
+*{box-sizing:border-box;margin:0;padding:0;-webkit-tap-highlight-color:transparent}
+html,body,#root{height:100%;background:#1c1915}
+body{overscroll-behavior:none}
+::-webkit-scrollbar{width:3px}
+::-webkit-scrollbar-thumb{background:#c4b8a8;border-radius:2px}
+input::placeholder{color:#c4b8a8}
+input,select,textarea,button{-webkit-appearance:none;outline:none}
+@keyframes spin{to{transform:rotate(360deg)}}
+</style>
+</head>
+<body>
+<div id="root"></div>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/react/18.2.0/umd/react.production.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/react-dom/18.2.0/umd/react-dom.production.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/babel-standalone/7.23.2/babel.min.js"></script>
+<script type="text/babel" data-presets="react">
+const { useState, useEffect, useRef, useCallback } = React;
+
+// ── Config ────────────────────────────────────────────────────────────────────
+const SUPABASE_URL = "https://ofdtlmerihkisvqdzgsv.supabase.co";
+const SUPABASE_KEY = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6Im9mZHRsbWVyaWhraXN2cWR6Z3N2Iiwicm9sZSI6ImFub24iLCJpYXQiOjE3ODUzMjU2MDcsImV4cCI6MjEwMDkwMTYwN30.nX0WhzGsxfSoBipRoVvAUB6u2SgkCHguKdybGd8bSrQ";
+const CLAUDE_API   = "https://api.anthropic.com/v1/messages";
+const CLAUDE_MODEL = "claude-sonnet-5";
+const USER_ID      = "jordan"; // single-user app
+
+// ── Design tokens ─────────────────────────────────────────────────────────────
+const C = {
+  ink:"#0f0e0c", warm:"#1c1915", gold:"#b8965a", goldLight:"#d4b483",
+  cream:"#faf7f2", paper:"#f3ede3", stone:"#e6ddd0", mist:"#c4b8a8",
+  smoke:"#8a7d6e", ash:"#6b5f52", white:"#ffffff", red:"#c9534f", green:"#4a8a4a",
+};
+
+const CATEGORIES = [
+  {id:"tops",label:"Tops",icon:"👕"},{id:"trousers",label:"Trousers",icon:"👖"},
+  {id:"shorts",label:"Shorts",icon:"🩳"},{id:"outerwear",label:"Outerwear",icon:"🧥"},
+  {id:"shoes",label:"Shoes",icon:"👟"},{id:"bags",label:"Bags",icon:"🎒"},
+  {id:"accessories",label:"Accessories",icon:"⌚"},{id:"activewear",label:"Activewear",icon:"🏃"},
+  {id:"swimwear",label:"Swimwear",icon:"🩲"},
+];
+
+const OCCASIONS = ["Work","Casual","Date Night","Going Out","Brunch","Travel","Formal","Gym","Beach"];
+const VIBES     = ["casual","smart casual","work","going out","beach","formal","adventure","nightlife","sightseeing","weekend"];
+const INSPO_SUGGESTIONS = [
+  "David Beckham","Pharrell Williams","Timothée Chalamet","A$AP Rocky","Virgil Abloh",
+  "Ryan Reynolds","Harry Styles","Tyler the Creator","Lewis Hamilton","Lenny Kravitz",
+  "quiet luxury","old money","streetwear","Scandi minimalism","smart casual",
+  "workwear prep","downtown NYC","Tokyo street style","French menswear","surf casual",
+  "techwear","gorpcore","clean aesthetic","skater","business casual","athleisure",
+];
+
+// ── Supabase client ───────────────────────────────────────────────────────────
+const sb = {
+  async query(path, opts = {}) {
+    const res = await fetch(`${SUPABASE_URL}/rest/v1/${path}`, {
+      headers: {
+        "apikey": SUPABASE_KEY,
+        "Authorization": `Bearer ${SUPABASE_KEY}`,
+        "Content-Type": "application/json",
+        "Prefer": opts.prefer || "return=representation",
+        ...opts.headers,
+      },
+      ...opts,
+    });
+    if (!res.ok) {
+      const err = await res.text();
+      throw new Error(`Supabase error: ${err}`);
+    }
+    const text = await res.text();
+    return text ? JSON.parse(text) : null;
+  },
+
+  // Wardrobe
+  async getWardrobe() {
+    return await sb.query(`wardrobe?user_id=eq.${USER_ID}&order=created_at.asc`) || [];
+  },
+  async addItem(item) {
+    const [row] = await sb.query("wardrobe", {
+      method: "POST",
+      body: JSON.stringify({ ...item, user_id: USER_ID }),
+    });
+    return row;
+  },
+  async updateItem(id, updates) {
+    const [row] = await sb.query(`wardrobe?id=eq.${id}`, {
+      method: "PATCH",
+      body: JSON.stringify(updates),
+    });
+    return row;
+  },
+  async deleteItem(id) {
+    await sb.query(`wardrobe?id=eq.${id}`, { method: "DELETE", prefer: "" });
+  },
+
+  // Saved outfits
+  async getOutfits() {
+    return await sb.query(`saved_outfits?user_id=eq.${USER_ID}&order=saved_at.desc`) || [];
+  },
+  async saveOutfit(outfit) {
+    const [row] = await sb.query("saved_outfits", {
+      method: "POST",
+      body: JSON.stringify({ ...outfit, user_id: USER_ID }),
+    });
+    return row;
+  },
+  async updateOutfit(id, updates) {
+    const [row] = await sb.query(`saved_outfits?id=eq.${id}`, {
+      method: "PATCH",
+      body: JSON.stringify(updates),
+    });
+    return row;
+  },
+  async deleteOutfit(id) {
+    await sb.query(`saved_outfits?id=eq.${id}`, { method: "DELETE", prefer: "" });
+  },
+
+  // Style prefs
+  async getPrefs() {
+    const rows = await sb.query(`style_prefs?user_id=eq.${USER_ID}`) || [];
+    return rows[0] || null;
+  },
+  async savePrefs(prefs) {
+    // Upsert
+    const existing = await sb.getPrefs();
+    if (existing) {
+      const [row] = await sb.query(`style_prefs?user_id=eq.${USER_ID}`, {
+        method: "PATCH",
+        body: JSON.stringify({ ...prefs, updated_at: new Date().toISOString() }),
+      });
+      return row;
+    } else {
+      const [row] = await sb.query("style_prefs", {
+        method: "POST",
+        body: JSON.stringify({ ...prefs, user_id: USER_ID }),
+      });
+      return row;
+    }
+  },
+
+  // Photo storage
+  async uploadPhoto(file, itemId) {
+    const compressed = await compressImage(file, 800, 0.8);
+    const path = `${USER_ID}/${itemId}.jpg`;
+    const res = await fetch(`${SUPABASE_URL}/storage/v1/object/wardrobe-photos/${path}`, {
+      method: "POST",
+      headers: {
+        "apikey": SUPABASE_KEY,
+        "Authorization": `Bearer ${SUPABASE_KEY}`,
+        "Content-Type": "image/jpeg",
+        "x-upsert": "true",
+      },
+      body: compressed,
+    });
+    if (!res.ok) throw new Error("Photo upload failed");
+    return `${SUPABASE_URL}/storage/v1/object/public/wardrobe-photos/${path}`;
+  },
+
+  async deletePhoto(itemId) {
+    const path = `${USER_ID}/${itemId}.jpg`;
+    await fetch(`${SUPABASE_URL}/storage/v1/object/wardrobe-photos/${path}`, {
+      method: "DELETE",
+      headers: { "apikey": SUPABASE_KEY, "Authorization": `Bearer ${SUPABASE_KEY}` },
+    });
+  },
+};
+
+// ── Image compression ─────────────────────────────────────────────────────────
+function compressImage(file, maxSize = 800, quality = 0.8) {
+  return new Promise((res, rej) => {
+    const img = new Image();
+    const url = URL.createObjectURL(file);
+    img.onload = () => {
+      URL.revokeObjectURL(url);
+      const canvas = document.createElement("canvas");
+      let { width, height } = img;
+      if (width > height && width > maxSize) { height = height * maxSize / width; width = maxSize; }
+      else if (height > maxSize) { width = width * maxSize / height; height = maxSize; }
+      canvas.width = width; canvas.height = height;
+      const ctx = canvas.getContext("2d");
+      ctx.fillStyle = "#f3ede3"; // neutral paper background
+      ctx.fillRect(0, 0, width, height);
+      ctx.drawImage(img, 0, 0, width, height);
+      canvas.toBlob(blob => blob ? res(blob) : rej(new Error("Compression failed")), "image/jpeg", quality);
+    };
+    img.onerror = rej;
+    img.src = url;
+  });
+}
+
+const toB64 = f => new Promise((res, rej) => {
+  const r = new FileReader(); r.onload = () => res(r.result.split(",")[1]); r.onerror = rej; r.readAsDataURL(f);
+});
+
+// ── Claude API ────────────────────────────────────────────────────────────────
+let _apiKey = "";
+function setGlobalApiKey(k) { _apiKey = k; }
+
+async function callClaude(prompt, imgB64 = null) {
+  const msgContent = imgB64
+    ? [{ type:"image", source:{ type:"base64", media_type:"image/jpeg", data:imgB64 }}, { type:"text", text:prompt }]
+    : prompt;
+  const headers = { "Content-Type": "application/json" };
+  if (_apiKey) {
+    headers["x-api-key"] = _apiKey;
+    headers["anthropic-version"] = "2023-06-01";
+    headers["anthropic-dangerous-direct-browser-access"] = "true";
+  }
+  const res = await fetch(CLAUDE_API, {
+    method: "POST",
+    headers,
+    body: JSON.stringify({ model: CLAUDE_MODEL, max_tokens: 1000, messages: [{ role:"user", content:msgContent }] }),
+  });
+  const data = await res.json();
+  if (data.error) throw new Error(data.error.message);
+  return data.content[0].text;
+}
+
+function parseJSON(raw) {
+  let s = raw.replace(/```json\s*/gi, "").replace(/```/g, "");
+  const start = s.search(/[{[]/);
+  if (start === -1) throw new Error("No JSON found");
+  s = s.slice(start);
+  let depth = 0, inStr = false, esc = false;
+  for (let i = 0; i < s.length; i++) {
+    const ch = s[i];
+    if (esc) { esc = false; continue; }
+    if (ch === "\\") { esc = true; continue; }
+    if (ch === '"') { inStr = !inStr; continue; }
+    if (inStr) continue;
+    if (ch === "{" || ch === "[") depth++;
+    if (ch === "}" || ch === "]") depth--;
+    if (depth === 0) return JSON.parse(s.slice(0, i + 1));
+  }
+  throw new Error("Unbalanced JSON");
+}
+
+function getAllTags(wardrobe) {
+  const s = new Set(); wardrobe.forEach(i => i.tags?.forEach(t => s.add(t))); return [...s].sort();
+}
+function daysSince(d) { return d ? Math.floor((Date.now() - new Date(d)) / 86400000) : null; }
+function lastWorn(item) { const l = item.wear_log || []; return l.length ? l[l.length - 1] : null; }
+
+// ── Shared styles ─────────────────────────────────────────────────────────────
+const IS = { width:"100%", padding:"10px 13px", border:`1px solid ${C.stone}`, borderRadius:8, background:C.cream, color:C.ink, fontSize:13, outline:"none", fontFamily:"'Jost',sans-serif" };
+const BP = { padding:"11px 20px", background:C.ink, color:C.white, border:"none", borderRadius:8, fontSize:12, letterSpacing:"0.1em", cursor:"pointer", display:"flex", alignItems:"center", justifyContent:"center", gap:8, fontFamily:"'Jost',sans-serif" };
+const BO = { padding:"10px 18px", background:"transparent", color:C.ash, border:`1px solid ${C.stone}`, borderRadius:8, fontSize:12, cursor:"pointer", fontFamily:"'Jost',sans-serif" };
+
+// ── Shared UI ─────────────────────────────────────────────────────────────────
+function Pill({ label, active, onClick }) {
+  return <button onClick={onClick} style={{ padding:"5px 14px", borderRadius:20, border:`1px solid ${active ? C.ink : C.stone}`, background:active ? C.ink : "transparent", color:active ? C.white : C.smoke, fontSize:12, cursor:"pointer", whiteSpace:"nowrap", fontFamily:"'Jost',sans-serif" }}>{label}</button>;
+}
+function GoldTag({ label, onRemove }) {
+  return <span style={{ display:"inline-flex", alignItems:"center", gap:4, background:C.gold, color:C.white, borderRadius:20, padding:"4px 12px", fontSize:12, fontWeight:500, fontFamily:"'Jost',sans-serif" }}>{label}{onRemove && <span onClick={onRemove} style={{ cursor:"pointer", opacity:0.7 }}>×</span>}</span>;
+}
+function STag({ label, onRemove }) {
+  return <span style={{ display:"inline-flex", alignItems:"center", gap:3, background:C.paper, color:C.ash, borderRadius:20, padding:"3px 9px", fontSize:11, fontWeight:500, fontFamily:"'Jost',sans-serif" }}>{label}{onRemove && <span onClick={onRemove} style={{ cursor:"pointer", color:C.mist }}>×</span>}</span>;
+}
+function Spinner({ text = "Loading…" }) {
+  return <div style={{ display:"flex", alignItems:"center", gap:10, color:C.gold, fontSize:13, fontStyle:"italic", padding:"14px 0", fontFamily:"'Jost',sans-serif" }}>
+    <div style={{ width:16, height:16, border:`2px solid ${C.gold}`, borderTopColor:"transparent", borderRadius:"50%", animation:"spin 0.7s linear infinite", flexShrink:0 }} />
+    {text}
+  </div>;
+}
+function Card({ children, style = {} }) {
+  return <div style={{ background:C.white, borderRadius:14, padding:20, border:`1px solid ${C.stone}`, ...style }}>{children}</div>;
+}
+function SL({ t }) {
+  return <div style={{ fontSize:10, letterSpacing:"0.28em", color:C.gold, marginBottom:12, fontWeight:600, fontFamily:"'Jost',sans-serif" }}>{t}</div>;
+}
+function Toast({ msg, action, onAction, onDismiss }) {
+  useEffect(() => { const t = setTimeout(onDismiss, 4500); return () => clearTimeout(t); }, []);
+  return <div style={{ position:"fixed", bottom:80, left:"50%", transform:"translateX(-50%)", background:C.ink, color:C.cream, borderRadius:10, padding:"11px 16px", fontSize:13, display:"flex", alignItems:"center", gap:12, zIndex:999, boxShadow:"0 4px 20px rgba(0,0,0,0.3)", whiteSpace:"nowrap", fontFamily:"'Jost',sans-serif" }}>
+    <span>{msg}</span>
+    {action && <button onClick={onAction} style={{ background:C.gold, border:"none", color:C.white, borderRadius:6, padding:"4px 10px", fontSize:11, cursor:"pointer", fontFamily:"'Jost',sans-serif" }}>{action}</button>}
+    <span onClick={onDismiss} style={{ cursor:"pointer", color:C.mist }}>×</span>
+  </div>;
+}
+function TagInput({ value, onChange, allTags }) {
+  const [inp, setInp] = useState("");
+  const add = t => { const c = t.trim().toLowerCase(); if (c && !value.includes(c)) onChange([...value, c]); setInp(""); };
+  const rem = t => onChange(value.filter(x => x !== t));
+  const sug = allTags.filter(t => !value.includes(t));
+  return <div>
+    <div style={{ display:"flex", flexWrap:"wrap", gap:5, marginBottom:7, minHeight:24 }}>{value.map(t => <STag key={t} label={t} onRemove={() => rem(t)} />)}</div>
+    <div style={{ display:"flex", gap:8, marginBottom:sug.length ? 8 : 0 }}>
+      <input value={inp} onChange={e => setInp(e.target.value)} onKeyDown={e => { if ((e.key === "Enter" || e.key === ",") && inp.trim()) { e.preventDefault(); add(inp); } }} placeholder="Type tag + Enter…" style={{ ...IS, flex:1 }} />
+      <button onClick={() => add(inp)} style={{ ...BP, padding:"9px 14px" }}>Add</button>
+    </div>
+    {sug.length > 0 && <div>
+      <div style={{ fontSize:10, letterSpacing:"0.15em", color:C.smoke, marginBottom:5, fontFamily:"'Jost',sans-serif" }}>YOUR TAGS</div>
+      <div style={{ display:"flex", flexWrap:"wrap", gap:5 }}>{sug.slice(0, 16).map(t => <button key={t} onClick={() => add(t)} style={{ padding:"4px 10px", borderRadius:20, border:`1px solid ${C.stone}`, background:C.cream, color:C.ash, fontSize:11, cursor:"pointer", fontFamily:"'Jost',sans-serif" }}>+ {t}</button>)}</div>
+    </div>}
+  </div>;
+}
+
+// ── Photo cell — used in outfit grid ─────────────────────────────────────────
+function PhotoCell({ item, size = 1 }) {
+  const cat = CATEGORIES.find(c => c.id === item?.category);
+  return <div style={{ background:C.paper, borderRadius:10, overflow:"hidden", display:"flex", flexDirection:"column", alignItems:"center", justifyContent:"flex-end", padding:0, position:"relative" }}>
+    {item?.photo_url
+      ? <img src={item.photo_url} style={{ width:"100%", height:"100%", objectFit:"cover", position:"absolute", inset:0 }} />
+      : <div style={{ position:"absolute", inset:0, display:"flex", alignItems:"center", justifyContent:"center", fontSize:size === 1 ? 36 : 28 }}>{cat?.icon || "✦"}</div>
+    }
+    <div style={{ position:"absolute", bottom:0, left:0, right:0, background:"linear-gradient(transparent, rgba(15,14,12,0.75))", padding:"20px 8px 8px" }}>
+      <div style={{ fontSize:11, color:C.cream, fontWeight:500, fontFamily:"'Jost',sans-serif", lineHeight:1.2 }}>{item?.name || "—"}</div>
+      {item?.brand && <div style={{ fontSize:9, color:C.mist, fontFamily:"'Jost',sans-serif", marginTop:1 }}>{item.brand}</div>}
+    </div>
+  </div>;
+}
+
+// ── Outfit grid (2x2 or 2x3) ─────────────────────────────────────────────────
+function OutfitGrid({ items, wardrobe, onSwap, onWash }) {
+  const [swapTarget, setSwapT] = useState(null);
+  const pieces = items.map(name => wardrobe.find(w => w.name.toLowerCase() === name.toLowerCase()) || { name, category:"tops" });
+
+  // Build grid — max 6 items
+  const gridItems = pieces.slice(0, 6);
+  const rows = gridItems.length <= 4 ? 2 : 3;
+  const cellH = rows === 2 ? 160 : 120;
+
+  return <div>
+    <div style={{ display:"grid", gridTemplateColumns:"1fr 1fr", gap:8 }}>
+      {gridItems.map((item, i) => (
+        <div key={i} style={{ height:cellH, position:"relative", borderRadius:10, overflow:"hidden" }}>
+          <PhotoCell item={item} />
+          {/* Action buttons */}
+          <div style={{ position:"absolute", top:6, right:6, display:"flex", gap:4 }}>
+            {onSwap && <button onClick={() => setSwapT(t => t === i ? null : i)} style={{ width:26, height:26, borderRadius:"50%", border:"none", background:"rgba(184,150,90,0.85)", color:C.white, fontSize:12, cursor:"pointer", display:"flex", alignItems:"center", justifyContent:"center" }} title="Swap">⇄</button>}
+            {onWash && <button onClick={() => { onWash(item); }} style={{ width:26, height:26, borderRadius:"50%", border:"none", background:"rgba(15,14,12,0.7)", color:C.mist, fontSize:12, cursor:"pointer", display:"flex", alignItems:"center", justifyContent:"center" }} title="Mark in wash">🧺</button>}
+          </div>
+          {/* Swap drawer */}
+          {swapTarget === i && <div style={{ position:"absolute", inset:0, background:"rgba(15,14,12,0.92)", borderRadius:10, padding:10, overflowY:"auto" }}>
+            <div style={{ fontSize:9, letterSpacing:"0.2em", color:C.gold, marginBottom:8, fontFamily:"'Jost',sans-serif" }}>SWAP WITH</div>
+            {wardrobe.filter(w => w.category === item.category && w.name !== item.name && !w.in_wash).map(opt => (
+              <button key={opt.id} onClick={() => { onSwap(item.name, opt.name); setSwapT(null); }} style={{ display:"block", width:"100%", padding:"6px 8px", marginBottom:4, background:"rgba(255,255,255,0.08)", border:"1px solid rgba(184,150,90,0.3)", borderRadius:7, color:C.cream, fontSize:11, cursor:"pointer", textAlign:"left", fontFamily:"'Jost',sans-serif" }}>
+                {opt.name}
+              </button>
+            ))}
+            {wardrobe.filter(w => w.category === item.category && w.name !== item.name && !w.in_wash).length === 0 && (
+              <div style={{ fontSize:11, color:C.mist, fontFamily:"'Jost',sans-serif" }}>No alternatives available</div>
+            )}
+            <button onClick={() => setSwapT(null)} style={{ marginTop:6, fontSize:11, color:C.smoke, background:"none", border:"none", cursor:"pointer", fontFamily:"'Jost',sans-serif" }}>Cancel</button>
+          </div>}
+        </div>
+      ))}
+    </div>
+    {pieces.length > 6 && <div style={{ fontSize:11, color:C.smoke, textAlign:"center", marginTop:8, fontFamily:"'Jost',sans-serif" }}>+{pieces.length - 6} more pieces</div>}
+  </div>;
+}
+
+// ── API KEY SCREEN ────────────────────────────────────────────────────────────
+function ApiKeyScreen({ onSave, onCancel, isUpdate }) {
+  const [key, setKey] = useState("");
+  const [show, setShow] = useState(false);
+  return <div style={{ position:"fixed", inset:0, background:C.warm, display:"flex", flexDirection:"column", alignItems:"center", justifyContent:"center", padding:32, zIndex:100 }}>
+    <div style={{ fontSize:22, fontWeight:300, letterSpacing:"0.18em", color:C.cream, marginBottom:4 }}>MAISON</div>
+    <div style={{ fontSize:10, letterSpacing:"0.35em", color:C.gold, marginBottom:40, fontFamily:"'Jost',sans-serif" }}>AI STYLIST</div>
+    <div style={{ background:C.white, borderRadius:16, padding:28, width:"100%", maxWidth:400 }}>
+      <div style={{ fontSize:18, fontWeight:400, marginBottom:8 }}>{isUpdate ? "Update API Key" : "Welcome to Maison"}</div>
+      <p style={{ fontSize:13, color:C.smoke, lineHeight:1.65, marginBottom:20, fontFamily:"'Jost',sans-serif" }}>
+        {isUpdate ? "Enter a new Anthropic API key below." : "To generate AI outfits you need an Anthropic API key. Get one free at console.anthropic.com — it only takes a minute."}
+      </p>
+      <div style={{ position:"relative", marginBottom:16 }}>
+        <input type={show ? "text" : "password"} value={key} onChange={e => setKey(e.target.value)} onKeyDown={e => e.key === "Enter" && key.trim() && onSave(key.trim())} placeholder="sk-ant-..." style={{ ...IS, paddingRight:56 }} />
+        <button onClick={() => setShow(s => !s)} style={{ position:"absolute", right:12, top:"50%", transform:"translateY(-50%)", background:"none", border:"none", color:C.smoke, cursor:"pointer", fontSize:12, fontFamily:"'Jost',sans-serif" }}>{show ? "Hide" : "Show"}</button>
+      </div>
+      <button onClick={() => key.trim() && onSave(key.trim())} disabled={!key.trim()} style={{ ...BP, width:"100%", marginBottom: onCancel ? 10 : 0 }}>
+        {isUpdate ? "Update Key" : "Save & Start →"}
+      </button>
+      {onCancel && <button onClick={onCancel} style={{ ...BO, width:"100%" }}>Cancel</button>}
+      <p style={{ fontSize:11, color:C.mist, lineHeight:1.6, marginTop:16, fontFamily:"'Jost',sans-serif" }}>Your key is stored only in your browser and used only to call Anthropic's API.</p>
+    </div>
+  </div>;
+}
+
+// ── CLOSET TAB ────────────────────────────────────────────────────────────────
+function ClosetTab({ wardrobe, setWardrobe, showToast }) {
+  const [adding, setAdding]   = useState(false);
+  const [editId, setEditId]   = useState(null);
+  const [filter, setFilter]   = useState("all");
+  const [washF, setWashF]     = useState("all");
+  const [search, setSearch]   = useState("");
+  const [form, setForm]       = useState({ name:"", category:"tops", color:"", brand:"", style:"", cut:"", tags:[] });
+  const [imgFile, setImgFile] = useState(null);
+  const [imgPrev, setImgPrev] = useState(null);
+  const [analyzing, setAn]    = useState(false);
+  const [saving, setSaving]   = useState(false);
+  const fRef = useRef();
+  const allTags = getAllTags(wardrobe);
+  const washN = wardrobe.filter(i => i.in_wash).length;
+
+  const reset = () => { setForm({ name:"", category:"tops", color:"", brand:"", style:"", cut:"", tags:[] }); setImgFile(null); setImgPrev(null); setEditId(null); };
+  const openAdd = () => { reset(); setAdding(true); };
+  const openEdit = item => {
+    setForm({ name:item.name, category:item.category, color:item.color||"", brand:item.brand||"", style:item.style||"", cut:item.cut||"", tags:item.tags||[] });
+    setImgPrev(item.photo_url || null);
+    setEditId(item.id); setAdding(true);
+  };
+
+  const handlePhoto = async file => {
+    if (!file) return;
+    setImgFile(file); setImgPrev(URL.createObjectURL(file)); setAn(true);
+    try {
+      const b64 = await toB64(file);
+      const raw = await callClaude(
+        `Analyse this men's clothing item. Return ONLY a JSON object, no other text:\n{"name":"<descriptive name>","category":"<tops|trousers|shorts|outerwear|shoes|bags|accessories|activewear|swimwear>","color":"<colour>","style":"<relaxed|tailored|minimal|classic|casual|streetwear>","cut":"<slim|regular|oversized|straight|wide leg|low top|mid-length|fitted|ankle>","brand":"<brand if visible, else empty string>","suggestedTags":["<tag1>","<tag2>","<tag3>"]}`,
+        b64
+      );
+      const p = parseJSON(raw);
+      setForm(f => ({ ...f, name:p.name||f.name, category:p.category||f.category, color:p.color||f.color, style:p.style||f.style, cut:p.cut||f.cut, brand:p.brand||f.brand, tags:p.suggestedTags?.length ? p.suggestedTags.map(t => t.toLowerCase()) : f.tags }));
+    } catch { showToast("Couldn't auto-tag — fill in manually"); }
+    setAn(false);
+  };
+
+  const save = async () => {
+    if (!form.name) return;
+    setSaving(true);
+    try {
+      if (editId) {
+        // Update existing item details first
+        const updates = { name:form.name, category:form.category, color:form.color, brand:form.brand, style:form.style, cut:form.cut, tags:form.tags };
+        const updated = await sb.updateItem(editId, updates);
+        setWardrobe(w => w.map(i => i.id === editId ? { ...i, ...updates, ...(updated || {}) } : i));
+        // Try photo upload separately — don't fail the whole save if it errors
+        if (imgFile) {
+          try {
+            const photoUrl = await sb.uploadPhoto(imgFile, editId);
+            await sb.updateItem(editId, { photo_url: photoUrl });
+            setWardrobe(w => w.map(i => i.id === editId ? { ...i, photo_url: photoUrl } : i));
+          } catch(photoErr) { showToast("Item saved ✓ — photo upload failed, try again"); setSaving(false); return; }
+        }
+        showToast("Changes saved ✓");
+      } else {
+        // Add new — create row first to get ID, then upload photo
+        const newItem = { name:form.name, category:form.category, color:form.color, brand:form.brand, style:form.style, cut:form.cut, tags:form.tags, in_wash:false, wear_log:[] };
+        const created = await sb.addItem(newItem);
+        setWardrobe(w => [...w, created]);
+        // Try photo upload separately
+        if (imgFile && created?.id) {
+          try {
+            const photoUrl = await sb.uploadPhoto(imgFile, created.id);
+            await sb.updateItem(created.id, { photo_url: photoUrl });
+            created.photo_url = photoUrl;
+            setWardrobe(w => w.map(i => i.id === created.id ? { ...i, photo_url: photoUrl } : i));
+            showToast("Added to closet ✓");
+          } catch(photoErr) { showToast("Item saved ✓ — photo failed, fix storage permissions"); }
+        } else {
+          showToast("Added to closet ✓");
+        }
+      }
+    } catch(e) { showToast("Save failed — " + e.message); }
+    reset(); setAdding(false); setSaving(false);
+  };
+
+  const toggleWash = async item => {
+    const updated = { in_wash: !item.in_wash };
+    await sb.updateItem(item.id, updated);
+    setWardrobe(w => w.map(i => i.id === item.id ? { ...i, ...updated } : i));
+    showToast(item.in_wash ? "Marked as available" : "Marked in the wash 🧺");
+  };
+
+  const deleteItem = async item => {
+    setWardrobe(w => w.filter(i => i.id !== item.id));
+    showToast(`"${item.name}" removed`, "Undo", async () => {
+      const restored = await sb.addItem({ name:item.name, category:item.category, color:item.color, brand:item.brand, style:item.style, cut:item.cut, tags:item.tags, in_wash:false, wear_log:[], photo_url:item.photo_url });
+      setWardrobe(w => [...w, restored]);
+    });
+    await sb.deleteItem(item.id);
+    if (item.photo_url) await sb.deletePhoto(item.id);
+  };
+
+  const visible = wardrobe.filter(i => {
+    if (filter !== "all" && i.category !== filter) return false;
+    if (washF === "available" && i.in_wash) return false;
+    if (washF === "wash" && !i.in_wash) return false;
+    if (search && !i.name.toLowerCase().includes(search.toLowerCase())) return false;
+    return true;
+  });
+
+  return <div>
+    <div style={{ display:"flex", justifyContent:"space-between", alignItems:"flex-end", marginBottom:6 }}>
+      <div>
+        <h2 style={{ fontSize:26, fontWeight:300 }}>My Closet</h2>
+        <p style={{ fontSize:12, color:C.smoke, marginTop:2, fontFamily:"'Jost',sans-serif" }}>{wardrobe.length} pieces{washN > 0 ? ` · ${washN} in the wash` : ""}</p>
+      </div>
+      <button onClick={openAdd} style={{ ...BP, padding:"9px 16px", fontSize:11 }}>+ ADD</button>
+    </div>
+
+    {adding && <Card style={{ marginBottom:18, marginTop:12 }}>
+      <SL t={editId ? "EDIT PIECE" : "ADD NEW PIECE"} />
+      <div onClick={() => fRef.current.click()} style={{ border:`2px dashed ${imgPrev ? "transparent" : C.stone}`, borderRadius:12, height:150, display:"flex", alignItems:"center", justifyContent:"center", cursor:"pointer", background:imgPrev ? C.paper : C.cream, marginBottom:14, overflow:"hidden", position:"relative" }}>
+        {imgPrev ? <img src={imgPrev} style={{ width:"100%", height:"100%", objectFit:"contain" }} /> : <div style={{ textAlign:"center", color:C.mist }}>
+          <div style={{ fontSize:26, marginBottom:4 }}>📷</div>
+          <div style={{ fontSize:11, letterSpacing:"0.1em", fontFamily:"'Jost',sans-serif" }}>UPLOAD PHOTO</div>
+          <div style={{ fontSize:10, marginTop:3, color:C.stone, fontFamily:"'Jost',sans-serif" }}>AI auto-tags · compressed · saved to cloud</div>
+        </div>}
+        {analyzing && <div style={{ position:"absolute", inset:0, background:"rgba(250,247,242,0.93)", display:"flex", alignItems:"center", justifyContent:"center" }}><Spinner text="Analysing your piece…" /></div>}
+      </div>
+      <input ref={fRef} type="file" accept="image/*" style={{ display:"none" }} onChange={e => handlePhoto(e.target.files[0])} />
+      <div style={{ display:"grid", gridTemplateColumns:"1fr 1fr", gap:9, marginBottom:12 }}>
+        <input value={form.name} onChange={e => setForm(f => ({ ...f, name:e.target.value }))} placeholder="Item name *" style={{ ...IS, gridColumn:"1/-1" }} />
+        <select value={form.category} onChange={e => setForm(f => ({ ...f, category:e.target.value }))} style={IS}>{CATEGORIES.map(c => <option key={c.id} value={c.id}>{c.icon} {c.label}</option>)}</select>
+        <input value={form.color} onChange={e => setForm(f => ({ ...f, color:e.target.value }))} placeholder="Colour / print" style={IS} />
+        <input value={form.brand} onChange={e => setForm(f => ({ ...f, brand:e.target.value }))} placeholder="Brand" style={IS} />
+        <input value={form.style} onChange={e => setForm(f => ({ ...f, style:e.target.value }))} placeholder="Style (e.g. tailored)" style={IS} />
+        <input value={form.cut} onChange={e => setForm(f => ({ ...f, cut:e.target.value }))} placeholder="Cut (e.g. slim)" style={IS} />
+      </div>
+      <div style={{ marginBottom:14 }}>
+        <div style={{ fontSize:10, letterSpacing:"0.2em", color:C.smoke, marginBottom:8, fontFamily:"'Jost',sans-serif" }}>TAGS</div>
+        <TagInput value={form.tags} onChange={tags => setForm(f => ({ ...f, tags }))} allTags={allTags} />
+      </div>
+      <div style={{ display:"flex", gap:8 }}>
+        <button onClick={() => { reset(); setAdding(false); }} style={{ ...BO, flex:1 }}>Cancel</button>
+        <button onClick={save} disabled={saving || !form.name} style={{ ...BP, flex:2 }}>{saving ? <Spinner text="Saving to cloud…" /> : (editId ? "Save Changes" : "Add to Closet")}</button>
+      </div>
+    </Card>}
+
+    <div style={{ marginBottom:14 }}>
+      <input value={search} onChange={e => setSearch(e.target.value)} placeholder="Search your closet…" style={{ ...IS, marginBottom:10 }} />
+      <div style={{ display:"flex", gap:6, overflowX:"auto", paddingBottom:6, marginBottom:8 }}>
+        <Pill label="All" active={filter === "all"} onClick={() => setFilter("all")} />
+        {CATEGORIES.map(c => <Pill key={c.id} label={`${c.icon} ${c.label}`} active={filter === c.id} onClick={() => setFilter(c.id)} />)}
+      </div>
+      <div style={{ display:"flex", gap:6 }}>
+        {[["all","All"], ["available","✓ Available"], ["wash","🧺 In Wash"]].map(([v, l]) => (
+          <button key={v} onClick={() => setWashF(v)} style={{ padding:"5px 12px", borderRadius:20, border:`1px solid ${washF === v ? C.gold : C.stone}`, background:washF === v ? C.gold : "transparent", color:washF === v ? C.white : C.smoke, fontSize:11, cursor:"pointer", fontFamily:"'Jost',sans-serif" }}>{l}</button>
+        ))}
+      </div>
+    </div>
+
+    {visible.length === 0
+      ? <div style={{ textAlign:"center", color:C.mist, fontSize:13, padding:"40px 0", fontStyle:"italic" }}>No pieces found</div>
+      : <div style={{ display:"grid", gridTemplateColumns:"1fr 1fr", gap:12 }}>
+          {visible.map(item => {
+            const cat = CATEGORIES.find(c => c.id === item.category);
+            const ds = daysSince(lastWorn(item));
+            return <div key={item.id} style={{ borderRadius:14, overflow:"hidden", border:`1px solid ${item.in_wash ? "#b8c8e8" : C.stone}`, background:item.in_wash ? "#f0f4fc" : C.white, opacity:item.in_wash ? 0.65 : 1 }}>
+              <div style={{ height:140, background:item.in_wash ? "#e4eaf8" : C.paper, display:"flex", alignItems:"center", justifyContent:"center", fontSize:38, position:"relative", overflow:"hidden" }}>
+                {item.photo_url ? <img src={item.photo_url} style={{ width:"100%", height:"100%", objectFit:"contain", padding:"6px" }} /> : cat?.icon}
+                {item.in_wash && <div style={{ position:"absolute", inset:0, display:"flex", alignItems:"center", justifyContent:"center", background:"rgba(180,200,240,0.5)", fontSize:28 }}>🧺</div>}
+                {ds !== null && ds > 14 && !item.in_wash && <div style={{ position:"absolute", bottom:6, right:6, background:"rgba(15,14,12,0.7)", color:C.mist, fontSize:9, padding:"2px 7px", borderRadius:10, fontFamily:"'Jost',sans-serif" }}>{ds}d</div>}
+              </div>
+              <div style={{ padding:"10px 12px 4px" }}>
+                <div style={{ fontSize:13, fontWeight:500, color:C.ink, lineHeight:1.3, fontFamily:"'Jost',sans-serif" }}>{item.name}</div>
+                <div style={{ fontSize:11, color:C.smoke, marginTop:2, fontFamily:"'Jost',sans-serif" }}>{[item.color, item.brand].filter(Boolean).join(" · ")}</div>
+                {item.tags?.length > 0 && <div style={{ display:"flex", flexWrap:"wrap", gap:3, marginTop:6 }}>{item.tags.slice(0, 3).map(t => <span key={t} style={{ fontSize:9, color:C.smoke, background:C.paper, borderRadius:10, padding:"2px 6px", fontFamily:"'Jost',sans-serif" }}>{t}</span>)}</div>}
+              </div>
+              <div style={{ display:"flex", gap:4, padding:"6px 10px 10px" }}>
+                <button onClick={() => toggleWash(item)} style={{ flex:1, padding:"5px 0", border:`1px solid ${item.in_wash ? "#b8c8e8" : C.stone}`, borderRadius:7, background:item.in_wash ? "#d8e4f8" : "transparent", fontSize:10, color:item.in_wash ? "#4a6a9a" : C.smoke, cursor:"pointer", fontFamily:"'Jost',sans-serif" }}>{item.in_wash ? "In Wash" : "🧺"}</button>
+                <button onClick={() => openEdit(item)} style={{ width:30, height:30, border:`1px solid ${C.stone}`, borderRadius:7, background:"transparent", fontSize:13, cursor:"pointer", color:C.smoke, display:"flex", alignItems:"center", justifyContent:"center" }}>✎</button>
+                <button onClick={() => deleteItem(item)} style={{ width:30, height:30, border:`1px solid ${C.stone}`, borderRadius:7, background:"transparent", fontSize:14, cursor:"pointer", color:C.mist, display:"flex", alignItems:"center", justifyContent:"center" }}>×</button>
+              </div>
+            </div>;
+          })}
+        </div>
+    }
+  </div>;
+}
+
+// ── OUTFITS TAB ───────────────────────────────────────────────────────────────
+function OutfitTab({ wardrobe, styleInspo, savedOutfits, setSavedOutfits, setWardrobe, showToast }) {
+  const [occ, setOcc]           = useState("Work");
+  const [customOcc, setCustom]  = useState("");
+  const [note, setNote]         = useState("");
+  const [result, setResult]     = useState(null);
+  const [outfitItems, setItems] = useState([]);
+  const [loading, setLoading]   = useState(false);
+  const [outfitName, setName]   = useState("");
+  const [showSave, setShowS]    = useState(false);
+  const [saving, setSaving]     = useState(false);
+  const avail = wardrobe.filter(i => !i.in_wash);
+  const occasion = customOcc || occ;
+  const neglected = wardrobe.filter(i => !i.in_wash && (i.wear_log||[]).length && daysSince(lastWorn(i)) > 21).slice(0, 2);
+
+  const generate = async () => {
+    setLoading(true); setResult(null); setShowS(false);
+    const list = avail.map(i => `- ${i.name} (${i.category}, ${i.color}${i.brand ? ", "+i.brand : ""}${i.style ? ", "+i.style : ""}, tags: ${(i.tags||[]).join("/")||"none"})`).join("\n");
+    const nudge = neglected.length ? `\nTry to incorporate: ${neglected.map(i => i.name).join(" or ")}.` : "";
+    const prompt = `You are a world-class men's personal stylist. Create a complete outfit for: ${occasion}.${note ? "\nContext: " + note : ""}${nudge}
+
+Available wardrobe — use ONLY these exact item names:
+${list}
+
+Style icons & aesthetic: ${styleInspo.join(", ")}
+
+Return ONLY a valid JSON object:
+{"vibe":"<3-5 word mood label>","outfit":["<exact item name>"],"why":"<one confident sentence>","elevate":"<one specific tip>","alternateItem":"<one swap suggestion>","notInWardrobe":"<one missing piece or empty string>"}`;
+    try {
+      const raw = await callClaude(prompt);
+      const r = parseJSON(raw);
+      if (!r.vibe || !r.outfit?.length) throw new Error("Incomplete response");
+      setResult(r); setItems([...r.outfit]); setName(`${occasion} look`);
+    } catch(e) { setResult({ error:true, msg:e.message }); }
+    setLoading(false);
+  };
+
+  const handleSwap = (oldName, newName) => {
+    setItems(items => items.map(x => x === oldName ? newName : x));
+    showToast(`Swapped in ${newName}`);
+  };
+
+  const handleWash = async (item) => {
+    await sb.updateItem(item.id, { in_wash: true });
+    setWardrobe(w => w.map(i => i.id === item.id ? { ...i, in_wash: true } : i));
+    const alt = wardrobe.find(w => w.category === item.category && w.name !== item.name && !w.in_wash);
+    if (alt) { setItems(items => items.map(x => x === item.name ? alt.name : x)); showToast(`${item.name} in wash — swapped for ${alt.name}`); }
+    else { setItems(items => items.filter(x => x !== item.name)); showToast(`${item.name} marked in wash 🧺`); }
+  };
+
+  const doSave = async () => {
+    if (!result || !outfitName.trim()) return;
+    setSaving(true);
+    try {
+      const outfit = await sb.saveOutfit({ name:outfitName.trim(), occasion, vibe:result.vibe, items:outfitItems, why:result.why, elevate:result.elevate, worn_dates:[] });
+      setSavedOutfits(s => [outfit, ...s]);
+      setShowS(false); showToast(`"${outfitName}" saved ❤️`);
+    } catch { showToast("Couldn't save — check connection"); }
+    setSaving(false);
+  };
+
+  return <div>
+    <h2 style={{ fontSize:26, fontWeight:300, marginBottom:4 }}>Outfit AI</h2>
+    <p style={{ fontSize:12, color:C.smoke, marginBottom:18, fontFamily:"'Jost',sans-serif" }}>Styling from {avail.length} available pieces</p>
+
+    {neglected.length > 0 && <Card style={{ marginBottom:14, background:"#f7f4ee" }}>
+      <div style={{ display:"flex", gap:10 }}>
+        <span style={{ fontSize:18 }}>💡</span>
+        <div>
+          <div style={{ fontSize:10, letterSpacing:"0.15em", color:C.smoke, marginBottom:3, fontFamily:"'Jost',sans-serif" }}>UNWORN FOR A WHILE</div>
+          <div style={{ fontSize:13, color:C.ash, lineHeight:1.5, fontFamily:"'Jost',sans-serif" }}>Your <strong>{neglected.map(i => i.name).join(" and ")}</strong> haven't been worn in 3+ weeks.</div>
+        </div>
+      </div>
+    </Card>}
+
+    <Card style={{ marginBottom:16 }}>
+      <SL t="OCCASION" />
+      <div style={{ display:"flex", flexWrap:"wrap", gap:7, marginBottom:12 }}>
+        {OCCASIONS.map(o => <Pill key={o} label={o} active={occ === o && !customOcc} onClick={() => { setOcc(o); setCustom(""); }} />)}
+      </div>
+      <input value={customOcc} onChange={e => setCustom(e.target.value)} placeholder="Or type your own: birthday dinner, gallery opening…" style={{ ...IS, marginBottom:10 }} />
+      <input value={note} onChange={e => setNote(e.target.value)} placeholder="Extra context: outdoor, hot weather, need to impress…" style={{ ...IS, marginBottom:12 }} />
+      <div style={{ fontSize:11, color:C.smoke, marginBottom:12, fontFamily:"'Jost',sans-serif" }}>Style DNA: {styleInspo.slice(0, 3).join(", ")}{styleInspo.length > 3 ? ` +${styleInspo.length - 3} more` : ""}</div>
+      <button onClick={generate} disabled={loading || avail.length < 2} style={{ ...BP, width:"100%" }}>
+        {loading ? <Spinner text="Building your look…" /> : `Style me for ${occasion} →`}
+      </button>
+    </Card>
+
+    {result && !result.error && <div>
+      {/* Vibe header */}
+      <div style={{ background:`linear-gradient(145deg,${C.warm} 0%,#2a2018 100%)`, borderRadius:18, padding:20, marginBottom:12, color:C.cream }}>
+        <div style={{ fontSize:9, letterSpacing:"0.35em", color:C.goldLight, marginBottom:4, fontFamily:"'Jost',sans-serif" }}>YOUR LOOK</div>
+        <div style={{ fontSize:26, fontWeight:300, fontStyle:"italic", marginBottom:2, lineHeight:1.2 }}>"{result.vibe}"</div>
+        <div style={{ fontSize:10, color:C.smoke, marginBottom:16, letterSpacing:"0.1em", fontFamily:"'Jost',sans-serif" }}>{occasion.toUpperCase()}</div>
+
+        {/* 2x2 or 2x3 photo grid */}
+        <OutfitGrid items={outfitItems} wardrobe={wardrobe} onSwap={handleSwap} onWash={handleWash} />
+
+        {/* Save */}
+        <div style={{ marginTop:14 }}>
+          {!showSave
+            ? <button onClick={() => setShowS(true)} style={{ width:"100%", padding:"11px", background:"rgba(184,150,90,0.15)", border:`1px solid ${C.gold}`, borderRadius:10, color:C.goldLight, fontSize:12, letterSpacing:"0.1em", cursor:"pointer", fontFamily:"'Jost',sans-serif" }}>❤ Save this look</button>
+            : <div>
+                <input value={outfitName} onChange={e => setName(e.target.value)} placeholder="Name this look…" style={{ ...IS, background:"rgba(255,255,255,0.08)", border:`1px solid rgba(184,150,90,0.4)`, color:C.cream, marginBottom:8 }} />
+                <div style={{ display:"flex", gap:8 }}>
+                  <button onClick={() => setShowS(false)} style={{ ...BO, flex:1, color:C.mist, borderColor:"rgba(255,255,255,0.15)" }}>Cancel</button>
+                  <button onClick={doSave} disabled={saving || !outfitName.trim()} style={{ ...BP, flex:2, background:C.gold }}>{saving ? "Saving…" : "Save look ❤"}</button>
+                </div>
+              </div>
+          }
+        </div>
+      </div>
+
+      <Card style={{ marginBottom:10 }}><SL t="WHY IT WORKS" /><p style={{ fontSize:14, lineHeight:1.75, color:C.ash, fontStyle:"italic" }}>{result.why}</p></Card>
+      <Card style={{ marginBottom:10, background:C.paper }}><SL t="✦ ELEVATE THE LOOK" /><p style={{ fontSize:14, lineHeight:1.75, color:C.ash, fontStyle:"italic" }}>{result.elevate}</p></Card>
+      {result.alternateItem && <Card style={{ marginBottom:10 }}><SL t="DIFFERENT VIBE?" /><p style={{ fontSize:13, color:C.smoke, fontFamily:"'Jost',sans-serif" }}>Swap: <strong style={{ color:C.ink }}>{result.alternateItem}</strong></p></Card>}
+      {result.notInWardrobe && <div style={{ background:C.ink, borderRadius:14, padding:16, marginBottom:14, display:"flex", gap:12 }}>
+        <span style={{ fontSize:18, flexShrink:0 }}>🛍️</span>
+        <div><div style={{ fontSize:9, letterSpacing:"0.25em", color:C.gold, marginBottom:4, fontFamily:"'Jost',sans-serif" }}>WOULD COMPLETE THIS LOOK</div><div style={{ fontSize:13, color:C.cream, lineHeight:1.6, fontFamily:"'Jost',sans-serif" }}>{result.notInWardrobe}</div></div>
+      </div>}
+      <button onClick={generate} style={{ ...BO, width:"100%" }}>Generate another look →</button>
+    </div>}
+
+    {result?.error && <Card style={{ background:"#fff3f0", border:`1px solid ${C.red}40`, marginTop:8 }}>
+      <div style={{ fontSize:12, fontWeight:600, color:C.red, marginBottom:4, fontFamily:"'Jost',sans-serif" }}>Couldn't generate outfit</div>
+      <div style={{ fontSize:12, color:C.smoke, fontFamily:"'Jost',sans-serif" }}>{result.msg}</div>
+      <button onClick={generate} style={{ ...BP, marginTop:12, width:"100%" }}>Try again →</button>
+    </Card>}
+  </div>;
+}
+
+// ── SAVED LOOKS TAB ───────────────────────────────────────────────────────────
+function SavedTab({ savedOutfits, setSavedOutfits, wardrobe, setWardrobe, showToast }) {
+  const [view, setView] = useState(null);
+
+  const wearToday = async outfit => {
+    const today = new Date().toISOString().split("T")[0];
+    const newDates = [...(outfit.worn_dates || []), today];
+    await sb.updateOutfit(outfit.id, { worn_dates: newDates });
+    setSavedOutfits(s => s.map(o => o.id === outfit.id ? { ...o, worn_dates: newDates } : o));
+    // Log wear on each item
+    await Promise.all(outfit.items.map(async name => {
+      const item = wardrobe.find(w => w.name.toLowerCase() === name.toLowerCase());
+      if (item) {
+        const newLog = [...(item.wear_log || []), today];
+        await sb.updateItem(item.id, { wear_log: newLog });
+        setWardrobe(w => w.map(i => i.id === item.id ? { ...i, wear_log: newLog } : i));
+      }
+    }));
+    showToast("Logged as worn today 👔");
+  };
+
+  const del = async id => {
+    const o = savedOutfits.find(x => x.id === id);
+    setSavedOutfits(s => s.filter(x => x.id !== id));
+    setView(null);
+    await sb.deleteOutfit(id);
+    showToast(`"${o?.name}" removed`, "Undo", async () => {
+      const restored = await sb.saveOutfit({ name:o.name, occasion:o.occasion, vibe:o.vibe, items:o.items, why:o.why, elevate:o.elevate, worn_dates:o.worn_dates });
+      setSavedOutfits(s => [restored, ...s]);
+    });
+  };
+
+  if (savedOutfits.length === 0) return <div>
+    <h2 style={{ fontSize:26, fontWeight:300, marginBottom:4 }}>Saved Looks</h2>
+    <div style={{ textAlign:"center", padding:"60px 20px" }}>
+      <div style={{ fontSize:40, marginBottom:16 }}>❤️</div>
+      <div style={{ fontSize:20, fontWeight:300, color:C.ash, marginBottom:8, fontStyle:"italic" }}>No saved looks yet</div>
+      <div style={{ fontSize:13, color:C.smoke, lineHeight:1.6, fontFamily:"'Jost',sans-serif" }}>Generate an outfit and tap "Save this look".</div>
+    </div>
+  </div>;
+
+  if (view !== null) {
+    const outfit = savedOutfits.find(o => o.id === view);
+    if (!outfit) return null;
+    const wornToday = outfit.worn_dates?.includes(new Date().toISOString().split("T")[0]);
+    return <div>
+      <button onClick={() => setView(null)} style={{ ...BO, marginBottom:16, padding:"8px 14px", fontSize:12 }}>← Back</button>
+      <div style={{ background:`linear-gradient(145deg,${C.warm},#2a2018)`, borderRadius:18, padding:20, marginBottom:14, color:C.cream }}>
+        <div style={{ fontSize:9, letterSpacing:"0.35em", color:C.goldLight, marginBottom:4, fontFamily:"'Jost',sans-serif" }}>{outfit.occasion?.toUpperCase()}</div>
+        <div style={{ fontSize:24, fontWeight:300, fontStyle:"italic", lineHeight:1.2, marginBottom:4 }}>"{outfit.vibe}"</div>
+        <div style={{ fontSize:12, color:C.mist, marginBottom:16, fontFamily:"'Jost',sans-serif" }}>{outfit.name}</div>
+        <OutfitGrid items={outfit.items || []} wardrobe={wardrobe} />
+        <button onClick={() => wearToday(outfit)} disabled={wornToday} style={{ marginTop:14, width:"100%", padding:"12px", background:wornToday ? "rgba(74,138,74,0.25)" : "rgba(184,150,90,0.15)", border:`1px solid ${wornToday ? C.green : C.gold}`, borderRadius:10, color:wornToday ? C.green : C.goldLight, fontSize:12, letterSpacing:"0.1em", cursor:wornToday ? "default" : "pointer", fontFamily:"'Jost',sans-serif" }}>
+          {wornToday ? "✓ Worn today" : "👔 I'm wearing this today"}
+        </button>
+      </div>
+      {outfit.why && <Card style={{ marginBottom:10 }}><SL t="WHY IT WORKS" /><p style={{ fontSize:14, lineHeight:1.75, color:C.ash, fontStyle:"italic" }}>{outfit.why}</p></Card>}
+      {outfit.elevate && <Card style={{ marginBottom:10, background:C.paper }}><SL t="✦ ELEVATE" /><p style={{ fontSize:14, lineHeight:1.75, color:C.ash, fontStyle:"italic" }}>{outfit.elevate}</p></Card>}
+      {outfit.worn_dates?.length > 0 && <Card style={{ marginBottom:10 }}>
+        <SL t="WEAR HISTORY" />
+        <div style={{ display:"flex", flexWrap:"wrap", gap:6 }}>{[...outfit.worn_dates].reverse().slice(0, 10).map((d, i) => <span key={i} style={{ fontSize:11, color:C.smoke, background:C.paper, borderRadius:10, padding:"3px 9px", fontFamily:"'Jost',sans-serif" }}>{new Date(d).toLocaleDateString("en-GB", { day:"numeric", month:"short" })}</span>)}</div>
+      </Card>}
+      <button onClick={() => del(outfit.id)} style={{ ...BO, width:"100%", color:C.red, borderColor:"#e8d0cf" }}>Remove saved look</button>
+    </div>;
+  }
+
+  return <div>
+    <h2 style={{ fontSize:26, fontWeight:300, marginBottom:4 }}>Saved Looks</h2>
+    <p style={{ fontSize:12, color:C.smoke, marginBottom:18, fontFamily:"'Jost',sans-serif" }}>{savedOutfits.length} looks saved</p>
+    {savedOutfits.map(outfit => {
+      const wornToday = outfit.worn_dates?.includes(new Date().toISOString().split("T")[0]);
+      return <div key={outfit.id} onClick={() => setView(outfit.id)} style={{ background:C.white, borderRadius:14, padding:16, marginBottom:10, border:`1px solid ${C.stone}`, display:"flex", alignItems:"center", gap:14, cursor:"pointer" }}>
+        <div style={{ width:52, height:52, borderRadius:10, background:C.paper, display:"flex", alignItems:"center", justifyContent:"center", fontSize:22, flexShrink:0, overflow:"hidden" }}>
+          {(() => { const first = wardrobe.find(w => outfit.items?.[0]?.toLowerCase() === w.name.toLowerCase()); return first?.photo_url ? <img src={first.photo_url} style={{ width:"100%", height:"100%", objectFit:"contain", padding:"4px" }} /> : "✦"; })()}
+        </div>
+        <div style={{ flex:1, minWidth:0 }}>
+          <div style={{ fontSize:15, fontWeight:500, color:C.ink, overflow:"hidden", textOverflow:"ellipsis", whiteSpace:"nowrap", fontFamily:"'Jost',sans-serif" }}>{outfit.name}</div>
+          <div style={{ fontSize:13, fontStyle:"italic", color:C.smoke, marginTop:1 }}>"{outfit.vibe}"</div>
+          <div style={{ fontSize:11, color:C.mist, marginTop:3, fontFamily:"'Jost',sans-serif" }}>{outfit.occasion} · {outfit.items?.length} pieces{outfit.worn_dates?.length ? ` · worn ${outfit.worn_dates.length}×` : ""}</div>
+        </div>
+        {wornToday && <span style={{ fontSize:10, color:C.green, background:"#f0f7f0", borderRadius:10, padding:"3px 8px", fontFamily:"'Jost',sans-serif", flexShrink:0 }}>TODAY</span>}
+        <span style={{ color:C.mist, fontSize:18 }}>›</span>
+      </div>;
+    })}
+  </div>;
+}
+
+// ── PLANNER TAB ───────────────────────────────────────────────────────────────
+function PlannerTab({ wardrobe, styleInspo }) {
+  const [mode, setMode]     = useState("week");
+  const [dest, setDest]     = useState("");
+  const [days, setDays]     = useState(5);
+  const [vibes, setVibes]   = useState(["work","casual"]);
+  const [result, setResult] = useState(null);
+  const [loading, setLoad]  = useState(false);
+  const avail = wardrobe.filter(i => !i.in_wash);
+
+  const generate = async () => {
+    setLoad(true); setResult(null);
+    const list = avail.map(i => `- ${i.name} (${i.category}, ${i.color}${i.brand ? ", "+i.brand : ""})`).join("\n");
+    const isTrip = mode === "trip";
+    const prompt = isTrip
+      ? `Men's packing stylist. ${days}-day trip to ${dest || "a destination"}. Vibes: ${vibes.join(", ")}. Style icons: ${styleInspo.join(", ")}.\n\nAvailable wardrobe:\n${list}\n\nMaximise outfits, minimise pieces. Return ONLY a JSON object:\n{"packingList":["<exact item name>"],"pieceCount":<number>,"outfitCount":<number>,"capsuleStrategy":"<one sentence>","days":[{"day":1,"label":"<occasion>","outfit":["<exact item name>"],"tip":"<brief tip>"}]}`
+      : `Men's week planner Mon–Fri. Vibes: ${vibes.join(", ")}. Style icons: ${styleInspo.join(", ")}.\n\nAvailable wardrobe:\n${list}\n\nNo repeated full outfits. Return ONLY a JSON object:\n{"theme":"<3-word theme>","days":[{"day":"Monday","label":"<mood>","outfit":["<exact item name>"],"tip":"<brief tip>"}],"repeatPiece":"<wardrobe MVP and why>"}`;
+    try {
+      const raw = await callClaude(prompt);
+      const r = parseJSON(raw);
+      setResult({ ...r, mode });
+    } catch(e) { setResult({ error:true, msg:e.message }); }
+    setLoad(false);
+  };
+
+  return <div>
+    <h2 style={{ fontSize:26, fontWeight:300, marginBottom:4 }}>Planner</h2>
+    <p style={{ fontSize:12, color:C.smoke, marginBottom:18, fontFamily:"'Jost',sans-serif" }}>{avail.length} pieces available</p>
+    <div style={{ display:"flex", gap:10, marginBottom:16 }}>
+      {[["week","📅 Working Week"], ["trip","🧳 Trip Packing"]].map(([m, l]) => (
+        <button key={m} onClick={() => setMode(m)} style={{ flex:1, padding:"12px", border:`1px solid ${mode === m ? C.ink : C.stone}`, background:mode === m ? C.ink : "transparent", color:mode === m ? C.white : C.smoke, borderRadius:10, fontSize:13, cursor:"pointer", fontFamily:"'Jost',sans-serif" }}>{l}</button>
+      ))}
+    </div>
+    <Card style={{ marginBottom:16 }}>
+      {mode === "trip" && <div style={{ display:"grid", gridTemplateColumns:"1fr 62px", gap:9, marginBottom:14 }}>
+        <input value={dest} onChange={e => setDest(e.target.value)} placeholder="Destination (e.g. Barcelona)" style={IS} />
+        <div><input type="number" min={1} max={21} value={days} onChange={e => setDays(+e.target.value)} style={{ ...IS, textAlign:"center" }} /><div style={{ textAlign:"center", fontSize:10, color:C.smoke, marginTop:2, letterSpacing:"0.1em", fontFamily:"'Jost',sans-serif" }}>DAYS</div></div>
+      </div>}
+      <SL t="VIBES" />
+      <div style={{ display:"flex", flexWrap:"wrap", gap:6, marginBottom:14 }}>
+        {VIBES.map(v => <Pill key={v} label={v} active={vibes.includes(v)} onClick={() => setVibes(vs => vs.includes(v) ? vs.filter(x => x !== v) : [...vs, v])} />)}
+      </div>
+      <button onClick={generate} disabled={loading || avail.length < 3} style={{ ...BP, width:"100%" }}>
+        {loading ? <Spinner text={mode === "trip" ? "Planning your trip…" : "Planning your week…"} /> : (mode === "trip" ? "Plan My Trip →" : "Plan My Week →")}
+      </button>
+    </Card>
+    {result && !result.error && <div>
+      {result.mode === "trip" && result.packingList && <>
+        <div style={{ background:C.ink, borderRadius:14, padding:20, marginBottom:12, color:C.cream }}>
+          <div style={{ fontSize:9, letterSpacing:"0.3em", color:C.gold, marginBottom:6, fontFamily:"'Jost',sans-serif" }}>CAPSULE STRATEGY</div>
+          <p style={{ fontSize:15, lineHeight:1.65, fontStyle:"italic" }}>{result.capsuleStrategy}</p>
+          <div style={{ display:"flex", gap:24, marginTop:14 }}>
+            <div style={{ textAlign:"center" }}><div style={{ fontSize:26, fontWeight:300, color:C.gold }}>{result.pieceCount}</div><div style={{ fontSize:9, color:C.mist, letterSpacing:"0.12em", fontFamily:"'Jost',sans-serif" }}>PIECES</div></div>
+            <div style={{ textAlign:"center" }}><div style={{ fontSize:26, fontWeight:300, color:C.gold }}>{result.outfitCount}</div><div style={{ fontSize:9, color:C.mist, letterSpacing:"0.12em", fontFamily:"'Jost',sans-serif" }}>OUTFITS</div></div>
+          </div>
+        </div>
+        <Card style={{ marginBottom:12 }}><SL t={`PACK THESE ${result.packingList.length} PIECES`} /><div style={{ display:"flex", flexWrap:"wrap", gap:6 }}>{result.packingList.map((item, i) => <STag key={i} label={item} />)}</div></Card>
+      </>}
+      {result.mode === "week" && result.theme && <Card style={{ marginBottom:12, background:C.ink, color:C.cream }}>
+        <div style={{ fontSize:9, letterSpacing:"0.3em", color:C.gold, marginBottom:6, fontFamily:"'Jost',sans-serif" }}>WEEK THEME</div>
+        <div style={{ fontSize:24, fontWeight:300, fontStyle:"italic" }}>{result.theme}</div>
+        {result.repeatPiece && <div style={{ fontSize:12, color:C.mist, marginTop:10, lineHeight:1.5, fontFamily:"'Jost',sans-serif" }}>✦ MVP: {result.repeatPiece}</div>}
+      </Card>}
+      {result.days?.map((day, i) => <Card key={i} style={{ marginBottom:10 }}>
+        <div style={{ display:"flex", justifyContent:"space-between", alignItems:"center", marginBottom:10 }}>
+          <div style={{ fontSize:16, fontWeight:500 }}>{day.day}</div>
+          <div style={{ fontSize:11, color:C.smoke, fontStyle:"italic", fontFamily:"'Jost',sans-serif" }}>{day.label}</div>
+        </div>
+        {day.outfit?.map((name, j) => {
+          const item = wardrobe.find(w => w.name.toLowerCase() === name.toLowerCase());
+          const cat = CATEGORIES.find(c => c.id === item?.category);
+          return <div key={j} style={{ display:"flex", alignItems:"center", gap:10, padding:"7px 0", borderBottom:`1px solid ${C.paper}` }}>
+            <div style={{ width:36, height:36, borderRadius:7, background:C.paper, overflow:"hidden", display:"flex", alignItems:"center", justifyContent:"center", fontSize:16, flexShrink:0 }}>
+              {item?.photo_url ? <img src={item.photo_url} style={{ width:"100%", height:"100%", objectFit:"contain", padding:"4px" }} /> : (cat?.icon || "✦")}
+            </div>
+            <div style={{ fontSize:13, color:C.ash, fontFamily:"'Jost',sans-serif" }}>{name}</div>
+          </div>;
+        })}
+        {day.tip && <div style={{ marginTop:8, fontSize:12, color:C.smoke, fontStyle:"italic", lineHeight:1.5, fontFamily:"'Jost',sans-serif" }}>✦ {day.tip}</div>}
+      </Card>)}
+    </div>}
+    {result?.error && <Card style={{ background:"#fff3f0", border:`1px solid ${C.red}40` }}>
+      <div style={{ fontSize:12, fontWeight:600, color:C.red, marginBottom:4, fontFamily:"'Jost',sans-serif" }}>Couldn't generate plan</div>
+      <div style={{ fontSize:12, color:C.smoke, fontFamily:"'Jost',sans-serif" }}>{result.msg}</div>
+      <button onClick={generate} style={{ ...BP, marginTop:12, width:"100%" }}>Try again →</button>
+    </Card>}
+  </div>;
+}
+
+// ── STYLE DNA + BUY TAB ───────────────────────────────────────────────────────
+function StyleTab({ styleInspo, setStyleInspo, wardrobe, wishlist, setWishlist, showToast }) {
+  const [section, setSection] = useState("style");
+  const [inp, setInp]         = useState("");
+  const [pLoad, setPLoad]     = useState(false);
+  const [pRes, setPRes]       = useState(null);
+  const [budget, setBudget]   = useState("mid-range");
+  const [focus, setFocus]     = useState([]);
+  const [buyRes, setBuyRes]   = useState(null);
+  const [buyLoad, setBuyLoad] = useState(false);
+  const pRef = useRef();
+
+  const add = v => { const c = v.trim(); if (c && !styleInspo.includes(c)) { setStyleInspo(s => [...s, c]); showToast(`"${c}" added`); } setInp(""); };
+  const rem = v => setStyleInspo(s => s.filter(x => x !== v));
+
+  const analysePhoto = async file => {
+    if (!file) return; setPLoad(true); setPRes(null);
+    try {
+      const b64 = await toB64(file);
+      const raw = await callClaude(`Analyse this men's outfit/style photo. Return ONLY a JSON object:\n{"aestheticLabel":"<3-5 word vibe>","styleKeywords":["<k1>","<k2>","<k3>"],"colorPalette":"<3-4 words>","notableDetails":"<one sentence>"}`, b64);
+      const p = parseJSON(raw);
+      [p.aestheticLabel, ...(p.styleKeywords || [])].filter(Boolean).forEach(v => { if (!styleInspo.includes(v)) setStyleInspo(s => [...s, v]); });
+      setPRes(p);
+    } catch { setPRes({ error:true }); }
+    setPLoad(false);
+  };
+
+  const analyse = async () => {
+    setBuyLoad(true); setBuyRes(null);
+    const list = wardrobe.map(i => `- ${i.name} (${i.category}, ${i.color}${i.brand ? ", "+i.brand : ""})`).join("\n");
+    const prompt = `Men's wardrobe strategist. Analyse for gaps.\n\nWardrobe:\n${list}\n\nStyle icons: ${styleInspo.join(", ")}\nBudget: ${budget}\nOccasions to improve: ${focus.length ? focus.join(", ") : "all"}\n\nReturn ONLY a JSON object:\n{"score":<0-100>,"scoreNote":"<sentence>","gaps":[{"priority":"high|medium|low","category":"<cat>","item":"<specific item>","why":"<sentence>","priceTier":"<affordable|mid-range|investment>","brands":["<b1>","<b2>","<b3>"]}],"investmentPiece":"<best investment>","quickWin":"<best add under £50>","overRepresented":"<over-stocked or empty string>"}`;
+    try { const raw = await callClaude(prompt); setBuyRes(parseJSON(raw)); }
+    catch(e) { setBuyRes({ error:true, msg:e.message }); }
+    setBuyLoad(false);
+  };
+
+  const cats = CATEGORIES.map(c => ({ ...c, count:wardrobe.filter(i => i.category === c.id).length })).filter(c => c.count > 0).sort((a, b) => b.count - a.count);
+  const gaps = CATEGORIES.filter(c => !wardrobe.some(i => i.category === c.id));
+  const PC = { high:C.red, medium:C.gold, low:C.smoke };
+
+  return <div>
+    <div style={{ display:"flex", gap:0, marginBottom:20, border:`1px solid ${C.stone}`, borderRadius:10, overflow:"hidden" }}>
+      {[["style","💫 Style DNA"], ["buy","🛍️ What to Buy"]].map(([s, l]) => (
+        <button key={s} onClick={() => setSection(s)} style={{ flex:1, padding:"11px", border:"none", background:section === s ? C.ink : "transparent", color:section === s ? C.white : C.smoke, fontSize:12, cursor:"pointer", fontFamily:"'Jost',sans-serif" }}>{l}</button>
+      ))}
+    </div>
+
+    {section === "style" && <div>
+      <Card style={{ marginBottom:12 }}>
+        <SL t="STYLE REFERENCES" />
+        <p style={{ fontSize:12, color:C.smoke, lineHeight:1.6, marginBottom:10, fontFamily:"'Jost',sans-serif" }}>Add anyone — celeb, TikToker, influencer — or any aesthetic. The AI uses these in every suggestion.</p>
+        <div style={{ display:"flex", flexWrap:"wrap", gap:7, marginBottom:12, minHeight:28 }}>
+          {styleInspo.map((s, i) => <GoldTag key={i} label={s} onRemove={() => rem(s)} />)}
+          {styleInspo.length === 0 && <span style={{ fontSize:12, color:C.mist, fontFamily:"'Jost',sans-serif" }}>None added yet</span>}
+        </div>
+        <div style={{ display:"flex", gap:8 }}>
+          <input value={inp} onChange={e => setInp(e.target.value)} onKeyDown={e => { if (e.key === "Enter") add(inp); }} placeholder="e.g. @username, A$AP Rocky, gorpcore…" style={{ ...IS, flex:1 }} />
+          <button onClick={() => add(inp)} style={BP}>Add</button>
+        </div>
+      </Card>
+      <Card style={{ marginBottom:12, background:C.paper }}>
+        <SL t="📸 ADD INSPO PHOTO" />
+        <p style={{ fontSize:12, color:C.smoke, lineHeight:1.6, marginBottom:10, fontFamily:"'Jost',sans-serif" }}>Screenshot a fit from TikTok or Instagram — AI reads the vibe and adds it to your style profile.</p>
+        <input ref={pRef} type="file" accept="image/*" style={{ display:"none" }} onChange={e => analysePhoto(e.target.files[0])} />
+        <button onClick={() => pRef.current.click()} disabled={pLoad} style={{ ...BP, width:"100%", background:C.gold }}>
+          {pLoad ? <Spinner text="Reading the vibe…" /> : "📷 Upload Inspo Photo"}
+        </button>
+        {pRes && !pRes.error && <div style={{ marginTop:12, padding:12, background:C.white, borderRadius:10, border:`1px solid ${C.stone}` }}>
+          <div style={{ fontSize:9, letterSpacing:"0.2em", color:C.gold, marginBottom:4, fontFamily:"'Jost',sans-serif" }}>VIBE DETECTED</div>
+          <div style={{ fontSize:16, fontWeight:500, marginBottom:4 }}>{pRes.aestheticLabel}</div>
+          <div style={{ fontSize:12, color:C.smoke, lineHeight:1.5, marginBottom:4, fontFamily:"'Jost',sans-serif" }}>{pRes.notableDetails}</div>
+          <div style={{ fontSize:11, color:C.mist, fontFamily:"'Jost',sans-serif" }}>Palette: {pRes.colorPalette}</div>
+          <div style={{ fontSize:11, color:C.green, marginTop:6, fontFamily:"'Jost',sans-serif" }}>✓ Added to your profile</div>
+        </div>}
+      </Card>
+      <Card style={{ marginBottom:12 }}>
+        <SL t="POPULAR REFERENCES" />
+        <div style={{ display:"flex", flexWrap:"wrap", gap:6 }}>
+          {INSPO_SUGGESTIONS.filter(s => !styleInspo.includes(s)).map(s => <button key={s} onClick={() => add(s)} style={{ padding:"5px 12px", borderRadius:20, border:`1px solid ${C.stone}`, background:C.cream, color:C.ash, fontSize:11, cursor:"pointer", fontFamily:"'Jost',sans-serif" }}>+ {s}</button>)}
+        </div>
+      </Card>
+      <Card style={{ marginBottom:12 }}>
+        <SL t="WARDROBE BREAKDOWN" />
+        {cats.map(c => <div key={c.id} style={{ display:"flex", alignItems:"center", gap:10, padding:"7px 0", borderBottom:`1px solid ${C.paper}` }}>
+          <span style={{ fontSize:18 }}>{c.icon}</span>
+          <div style={{ flex:1 }}>
+            <div style={{ fontSize:13, color:C.ink, fontFamily:"'Jost',sans-serif" }}>{c.label}</div>
+            <div style={{ height:3, background:C.paper, borderRadius:2, marginTop:4, overflow:"hidden" }}><div style={{ height:"100%", background:C.gold, borderRadius:2, width:`${Math.min(100, c.count * 8)}%` }} /></div>
+          </div>
+          <div style={{ fontSize:14, fontWeight:600, color:C.ash, fontFamily:"'Jost',sans-serif" }}>{c.count}</div>
+        </div>)}
+        {wardrobe.length === 0 && <p style={{ fontSize:12, color:C.mist, fontFamily:"'Jost',sans-serif" }}>Add items to your closet first</p>}
+      </Card>
+      {gaps.length > 0 && <Card style={{ background:C.paper }}>
+        <SL t="MISSING CATEGORIES" />
+        <div style={{ display:"flex", flexWrap:"wrap", gap:6 }}>{gaps.map(c => <span key={c.id} style={{ padding:"5px 12px", borderRadius:20, border:`1px solid ${C.stone}`, fontSize:12, color:C.smoke, fontFamily:"'Jost',sans-serif" }}>{c.icon} {c.label}</span>)}</div>
+      </Card>}
+    </div>}
+
+    {section === "buy" && <div>
+      <Card style={{ marginBottom:14 }}>
+        <SL t="BUDGET" />
+        <div style={{ display:"flex", gap:8, marginBottom:14 }}>
+          {[["affordable","High Street"], ["mid-range","Mid Range"], ["investment","Investment"]].map(([v, l]) => <button key={v} onClick={() => setBudget(v)} style={{ flex:1, padding:"9px 0", border:`1px solid ${budget === v ? C.ink : C.stone}`, background:budget === v ? C.ink : "transparent", color:budget === v ? C.white : C.smoke, borderRadius:8, fontSize:12, cursor:"pointer", fontFamily:"'Jost',sans-serif" }}>{l}</button>)}
+        </div>
+        <SL t="OCCASIONS TO IMPROVE" />
+        <div style={{ display:"flex", flexWrap:"wrap", gap:6, marginBottom:14 }}>
+          {OCCASIONS.map(o => <Pill key={o} label={o} active={focus.includes(o)} onClick={() => setFocus(f => f.includes(o) ? f.filter(x => x !== o) : [...f, o])} />)}
+        </div>
+        <button onClick={analyse} disabled={buyLoad || wardrobe.length < 2} style={{ ...BP, width:"100%" }}>
+          {buyLoad ? <Spinner text="Analysing your wardrobe…" /> : "Analyse My Wardrobe →"}
+        </button>
+      </Card>
+      {wishlist.length > 0 && <Card style={{ marginBottom:14 }}>
+        <SL t={`WISHLIST (${wishlist.length})`} />
+        {wishlist.map((w, i) => <div key={w.id} style={{ display:"flex", alignItems:"center", gap:10, padding:"8px 0", borderBottom:i < wishlist.length - 1 ? `1px solid ${C.paper}` : "none" }}>
+          <div style={{ flex:1 }}>
+            <div style={{ fontSize:13, fontWeight:500, color:C.ink, fontFamily:"'Jost',sans-serif" }}>{w.item}</div>
+            <div style={{ fontSize:11, color:C.smoke, marginTop:1, fontFamily:"'Jost',sans-serif" }}>{w.brands?.join(" · ") || w.priceTier}</div>
+          </div>
+          <button onClick={() => setWishlist(ws => ws.filter(x => x.id !== w.id))} style={{ width:26, height:26, border:`1px solid ${C.stone}`, borderRadius:6, background:"transparent", fontSize:13, cursor:"pointer", color:C.mist, display:"flex", alignItems:"center", justifyContent:"center" }}>×</button>
+        </div>)}
+      </Card>}
+      {buyRes && !buyRes.error && <div>
+        <div style={{ background:C.ink, borderRadius:16, padding:22, marginBottom:12, color:C.cream, display:"flex", alignItems:"center", gap:18 }}>
+          <div style={{ textAlign:"center", flexShrink:0 }}><div style={{ fontSize:44, fontWeight:300, color:C.gold, lineHeight:1 }}>{buyRes.score}</div><div style={{ fontSize:9, color:C.mist, letterSpacing:"0.15em", marginTop:2, fontFamily:"'Jost',sans-serif" }}>WARDROBE SCORE</div></div>
+          <p style={{ fontSize:14, lineHeight:1.65, fontStyle:"italic" }}>{buyRes.scoreNote}</p>
+        </div>
+        <div style={{ display:"grid", gridTemplateColumns:"1fr 1fr", gap:10, marginBottom:12 }}>
+          {buyRes.quickWin && <Card style={{ background:"#f0f7f0" }}><div style={{ fontSize:9, letterSpacing:"0.18em", color:C.green, marginBottom:6, fontFamily:"'Jost',sans-serif" }}>QUICK WIN</div><div style={{ fontSize:13, color:C.ink, lineHeight:1.5, fontFamily:"'Jost',sans-serif" }}>{buyRes.quickWin}</div></Card>}
+          {buyRes.investmentPiece && <Card style={{ background:C.paper }}><div style={{ fontSize:9, letterSpacing:"0.18em", color:C.gold, marginBottom:6, fontFamily:"'Jost',sans-serif" }}>INVESTMENT</div><div style={{ fontSize:13, color:C.ink, lineHeight:1.5, fontFamily:"'Jost',sans-serif" }}>{buyRes.investmentPiece}</div></Card>}
+        </div>
+        <SL t="RECOMMENDED ADDS" />
+        {buyRes.gaps?.map((gap, i) => <Card key={i} style={{ marginBottom:10 }}>
+          <div style={{ display:"flex", alignItems:"center", gap:8, marginBottom:6 }}>
+            <div style={{ fontSize:9, letterSpacing:"0.12em", color:PC[gap.priority], fontWeight:600, fontFamily:"'Jost',sans-serif" }}>{gap.priority?.toUpperCase()} PRIORITY</div>
+            <div style={{ fontSize:9, color:C.mist, fontFamily:"'Jost',sans-serif" }}>· {gap.priceTier}</div>
+          </div>
+          <div style={{ fontSize:15, fontWeight:500, color:C.ink, marginBottom:4 }}>{gap.item}</div>
+          <div style={{ fontSize:12, color:C.smoke, lineHeight:1.55, marginBottom:10, fontFamily:"'Jost',sans-serif" }}>{gap.why}</div>
+          {gap.brands?.length > 0 && <div style={{ display:"flex", gap:5, flexWrap:"wrap", marginBottom:10 }}>{gap.brands.map((b, j) => <span key={j} style={{ fontSize:11, color:C.smoke, padding:"3px 8px", borderRadius:20, border:`1px solid ${C.stone}`, fontFamily:"'Jost',sans-serif" }}>{b}</span>)}</div>}
+          <button onClick={() => {
+            if (wishlist.find(w => w.item === gap.item)) { showToast("Already on your wishlist"); return; }
+            setWishlist(ws => [...ws, { id:Date.now(), ...gap }]);
+            showToast(`"${gap.item}" added to wishlist ✓`);
+          }} style={{ ...BO, width:"100%", fontSize:11, padding:"7px" }}>+ Add to Wishlist</button>
+        </Card>)}
+      </div>}
+      {buyRes?.error && <Card style={{ background:"#fff3f0", border:`1px solid ${C.red}40` }}>
+        <div style={{ fontSize:12, fontWeight:600, color:C.red, marginBottom:4, fontFamily:"'Jost',sans-serif" }}>Couldn't analyse</div>
+        <button onClick={analyse} style={{ ...BP, marginTop:8, width:"100%" }}>Try again →</button>
+      </Card>}
+    </div>}
+  </div>;
+}
+
+// ── ROOT APP ──────────────────────────────────────────────────────────────────
+const TABS = [
+  { id:"closet",  icon:"🗄️", label:"Closet"  },
+  { id:"outfits", icon:"✦",  label:"Outfits" },
+  { id:"saved",   icon:"❤️", label:"Saved"   },
+  { id:"planner", icon:"📅", label:"Planner" },
+  { id:"style",   icon:"💫", label:"Style"   },
+];
+
+function App() {
+  const [tab, setTab]             = useState("closet");
+  const [wardrobe, setWardrobe]   = useState([]);
+  const [savedOutfits, setSaved]  = useState([]);
+  const [styleInspo, setInspo]    = useState([]);
+  const [wishlist, setWishlist]   = useState([]);
+  const [apiKey, setApiKey]       = useState("");
+  const [showKeySetup, setShowKey]= useState(false);
+  const [toast, setToast]         = useState(null);
+  const [loaded, setLoaded]       = useState(false);
+  const [loadError, setLoadError] = useState(null);
+
+  // Sync apiKey to module level
+  useEffect(() => { if (apiKey) setGlobalApiKey(apiKey); }, [apiKey]);
+
+  // Load everything from Supabase on mount
+  useEffect(() => {
+    const savedKey = localStorage.getItem("maison_api_key") || "";
+    if (savedKey) { setApiKey(savedKey); setGlobalApiKey(savedKey); }
+    (async () => {
+      try {
+        const [w, o, prefs] = await Promise.all([sb.getWardrobe(), sb.getOutfits(), sb.getPrefs()]);
+        setWardrobe(w);
+        setSaved(o);
+        if (prefs) {
+          setInspo(prefs.style_inspo || []);
+          setWishlist(prefs.wishlist || []);
+        }
+        setLoaded(true);
+      } catch(e) {
+        setLoadError(e.message);
+        setLoaded(true);
+      }
+    })();
+  }, []);
+
+  // Save style inspo + wishlist to Supabase whenever they change
+  useEffect(() => {
+    if (!loaded) return;
+    sb.savePrefs({ style_inspo: styleInspo, wishlist }).catch(() => {});
+  }, [styleInspo, wishlist, loaded]);
+
+  const saveApiKey = key => {
+    setApiKey(key); setGlobalApiKey(key);
+    localStorage.setItem("maison_api_key", key);
+    setShowKey(false);
+    showToast("API key saved ✓");
+  };
+
+  const exportWardrobe = () => {
+    const data = { wardrobe, savedOutfits, styleInspo, wishlist, exportedAt:new Date().toISOString() };
+    const blob = new Blob([JSON.stringify(data, null, 2)], { type:"application/json" });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement("a");
+    a.href = url; a.download = `maison-backup-${new Date().toISOString().split("T")[0]}.json`;
+    a.click(); URL.revokeObjectURL(url);
+    showToast("Wardrobe exported ✓");
+  };
+
+  const showToast = useCallback((msg, action, onAction) => {
+    setToast({ msg, action, onAction, key: Date.now() });
+  }, []);
+
+  const washN  = wardrobe.filter(i => i.in_wash).length;
+  const savedN = savedOutfits.length;
+
+  // API key screen on first launch
+  if (loaded && !apiKey) return <ApiKeyScreen onSave={saveApiKey} />;
+
+  if (!loaded) return (
+    <div style={{ height:"100vh", display:"flex", alignItems:"center", justifyContent:"center", background:C.warm, flexDirection:"column", gap:12 }}>
+      <style>{`@keyframes spin{to{transform:rotate(360deg)}}`}</style>
+      <div style={{ width:20, height:20, border:`2px solid ${C.gold}`, borderTopColor:"transparent", borderRadius:"50%", animation:"spin 0.7s linear infinite" }} />
+      <div style={{ fontSize:12, color:C.smoke, letterSpacing:"0.2em", fontFamily:"'Jost',sans-serif" }}>LOADING YOUR WARDROBE</div>
+    </div>
+  );
+
+  return (
+    <div style={{ display:"flex", flexDirection:"column", height:"100vh", background:C.cream, fontFamily:"'Cormorant Garamond',Georgia,serif", color:C.ink, maxWidth:480, margin:"0 auto" }}>
+      <style>{`
+        @import url('https://fonts.googleapis.com/css2?family=Cormorant+Garamond:ital,wght@0,300;0,400;0,500;1,300;1,400;1,500&family=Jost:wght@300;400;500;600&display=swap');
+        @keyframes spin{to{transform:rotate(360deg)}}
+        *{box-sizing:border-box}
+        ::-webkit-scrollbar{width:3px}
+        ::-webkit-scrollbar-thumb{background:#c4b8a8;border-radius:2px}
+        input::placeholder{color:#c4b8a8}
+      `}</style>
+
+      {/* Header */}
+      <header style={{ background:C.warm, color:C.cream, padding:"16px 20px", display:"flex", alignItems:"center", justifyContent:"space-between", flexShrink:0 }}>
+        <div>
+          <div style={{ fontSize:20, fontWeight:400, letterSpacing:"0.2em" }}>MAISON</div>
+          <div style={{ fontSize:9, letterSpacing:"0.38em", color:C.gold, marginTop:1, fontFamily:"'Jost',sans-serif" }}>AI STYLIST</div>
+        </div>
+        <div style={{ display:"flex", alignItems:"center", gap:12 }}>
+          <div style={{ textAlign:"right" }}>
+            <div style={{ fontSize:18, fontWeight:300, color:C.goldLight }}>{wardrobe.length}</div>
+            <div style={{ fontSize:9, letterSpacing:"0.15em", color:C.smoke, fontFamily:"'Jost',sans-serif" }}>PIECES{washN > 0 ? ` · ${washN} 🧺` : ""}</div>
+          </div>
+          <div style={{ display:"flex", flexDirection:"column", gap:4 }}>
+            <button onClick={() => setShowKey(true)} title="API Key" style={{ width:30, height:30, borderRadius:"50%", border:"1px solid rgba(255,255,255,0.15)", background:"transparent", color:C.mist, fontSize:13, cursor:"pointer", display:"flex", alignItems:"center", justifyContent:"center" }}>⚙</button>
+            <button onClick={exportWardrobe} title="Export backup" style={{ width:30, height:30, borderRadius:"50%", border:"1px solid rgba(255,255,255,0.15)", background:"transparent", color:C.mist, fontSize:13, cursor:"pointer", display:"flex", alignItems:"center", justifyContent:"center" }}>↓</button>
+          </div>
+        </div>
+      </header>
+
+      {loadError && <div style={{ background:"#fff3f0", padding:"10px 18px", fontSize:12, color:C.red, fontFamily:"'Jost',sans-serif" }}>
+        Connection issue — some data may not have loaded. Check your internet connection.
+      </div>}
+
+      {/* Content */}
+      <main style={{ flex:1, overflowY:"auto", padding:"20px 18px 24px" }}>
+        {tab === "closet"  && <ClosetTab  wardrobe={wardrobe} setWardrobe={setWardrobe} showToast={showToast} />}
+        {tab === "outfits" && <OutfitTab  wardrobe={wardrobe} styleInspo={styleInspo} savedOutfits={savedOutfits} setSavedOutfits={setSaved} setWardrobe={setWardrobe} showToast={showToast} />}
+        {tab === "saved"   && <SavedTab   savedOutfits={savedOutfits} setSavedOutfits={setSaved} wardrobe={wardrobe} setWardrobe={setWardrobe} showToast={showToast} />}
+        {tab === "planner" && <PlannerTab wardrobe={wardrobe} styleInspo={styleInspo} />}
+        {tab === "style"   && <StyleTab   styleInspo={styleInspo} setStyleInspo={setInspo} wardrobe={wardrobe} wishlist={wishlist} setWishlist={setWishlist} showToast={showToast} />}
+      </main>
+
+      {/* Bottom nav */}
+      <nav style={{ display:"flex", background:C.white, borderTop:`1px solid ${C.stone}`, flexShrink:0 }}>
+        {TABS.map(t => {
+          const badge = t.id === "saved" && savedN > 0 ? savedN : null;
+          return <button key={t.id} onClick={() => setTab(t.id)} style={{ flex:1, padding:"10px 4px 8px", border:"none", background:"transparent", borderTop:`2px solid ${tab === t.id ? C.gold : "transparent"}`, color:tab === t.id ? C.ink : C.mist, fontSize:9, letterSpacing:"0.1em", cursor:"pointer", fontWeight:tab === t.id ? 600 : 400, position:"relative", fontFamily:"'Jost',sans-serif" }}>
+            <div style={{ fontSize:17, marginBottom:2, position:"relative", display:"inline-block" }}>
+              {t.icon}
+              {badge && <span style={{ position:"absolute", top:-4, right:-8, background:C.gold, color:C.white, borderRadius:"50%", width:14, height:14, fontSize:8, display:"flex", alignItems:"center", justifyContent:"center", fontWeight:600 }}>{badge}</span>}
+            </div>
+            <div>{t.label.toUpperCase()}</div>
+          </button>;
+        })}
+      </nav>
+
+      {showKeySetup && <ApiKeyScreen onSave={saveApiKey} onCancel={() => setShowKey(false)} isUpdate />}
+      {toast && <Toast key={toast.key} msg={toast.msg} action={toast.action} onAction={() => { toast.onAction?.(); setToast(null); }} onDismiss={() => setToast(null)} />}
+    </div>
+  );
+}
+
+ReactDOM.createRoot(document.getElementById("root")).render(React.createElement(App));
+</script>
+<script>
+if ("serviceWorker" in navigator) {
+  window.addEventListener("load", () => navigator.serviceWorker.register("sw.js").catch(() => {}));
+}
+</script>
+</body>
+</html>
