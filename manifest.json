@@ -1,0 +1,13 @@
+{
+  "name": "Maison AI Stylist",
+  "short_name": "Maison",
+  "description": "Your personal AI wardrobe and outfit stylist",
+  "start_url": "/",
+  "display": "standalone",
+  "background_color": "#1c1915",
+  "theme_color": "#1c1915",
+  "orientation": "portrait",
+  "icons": [
+    { "src": "icon.png", "sizes": "192x192", "type": "image/png", "purpose": "any maskable" }
+  ]
+}
